@@ -1,0 +1,286 @@
+import tensorflow as tf
+import gym
+import numpy as np
+import random
+import matplotlib.pyplot as plt
+import math
+from collections import deque
+import tensorflow_quantum as tfq
+import cirq
+import sympy
+
+class PPO_agent(object):
+    def __init__(self, action_space, state_space) -> None:
+        super().__init__()
+        self.action_space = action_space
+        self.state_space = state_space[0]
+        self.e = 0.1  # Policy distance
+        self.qubits = [cirq.GridQubit(0, i) for i in range(4)]
+        self.gamma = 0.99  # Discount factor
+        self.K = 4  # Number of epochs
+        self.T = 500  # Horizon
+        self.ent = 0.1
+        self.states = np.zeros((self.T, self.state_space))
+        self.rewards = np.zeros((self.T, 1))
+        self.actions = np.zeros((self.T, 1))
+        self.probs = np.zeros((self.T, self.action_space))
+        self.iter = 0
+        self.policy_opt = tf.keras.optimizers.Adam(lr=0.001)
+        self.critic_opt = tf.keras.optimizers.Adam(lr=0.01)
+        self.actor, self.critic = self.make_func_approx()
+
+    def make_func_approx(self):
+        # output reuse 16*4 times
+        readout_operators_actor =[cirq.Z(self.qubits[0]),cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                  cirq.Z(self.qubits[0]),cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                  cirq.Z(self.qubits[0]),cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                  cirq.Z(self.qubits[0]),cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                  cirq.Z(self.qubits[0]), cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                  cirq.Z(self.qubits[0]), cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                  cirq.Z(self.qubits[0]), cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                  cirq.Z(self.qubits[0]), cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                  cirq.Z(self.qubits[0]), cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                  cirq.Z(self.qubits[0]), cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                  cirq.Z(self.qubits[0]), cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                  cirq.Z(self.qubits[0]), cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                  cirq.Z(self.qubits[0]), cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                  cirq.Z(self.qubits[0]), cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                  cirq.Z(self.qubits[0]), cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                  cirq.Z(self.qubits[0]), cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3])]
+
+        inputs = tf.keras.Input(shape=(), dtype=tf.dtypes.string)
+        diff = tfq.differentiators.ParameterShift()
+        diff1 = tfq.differentiators.ParameterShift()
+        init = tf.keras.initializers.Zeros
+
+        #creat Actor VQC model
+        Actor_output = tfq.layers.PQC(self.make_circuit(self.qubits), readout_operators_actor, differentiator=diff,
+                             initializer = init)(inputs)
+
+        # Connecting VQC and classical Dense
+        Actor_output = tf.keras.layers.Dense(2, activation='linear')(Actor_output)
+
+        # Actor softmax layer
+        Actor_output_softmax = tf.keras.layers.Softmax()(Actor_output)
+
+        # Creat actor model
+        Actor_model = tf.keras.Model(inputs=[inputs], outputs=[Actor_output_softmax])
+
+        # output reuse 16*4
+        readout_operators_value = [cirq.Z(self.qubits[0]),cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                  cirq.Z(self.qubits[0]),cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                  cirq.Z(self.qubits[0]),cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                  cirq.Z(self.qubits[0]),cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                  cirq.Z(self.qubits[0]), cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                  cirq.Z(self.qubits[0]), cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                  cirq.Z(self.qubits[0]), cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                  cirq.Z(self.qubits[0]), cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                   cirq.Z(self.qubits[0]), cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                   cirq.Z(self.qubits[0]), cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                   cirq.Z(self.qubits[0]), cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                   cirq.Z(self.qubits[0]), cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                   cirq.Z(self.qubits[0]), cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                   cirq.Z(self.qubits[0]), cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                   cirq.Z(self.qubits[0]), cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3]),
+                                   cirq.Z(self.qubits[0]), cirq.Z(self.qubits[1]), cirq.Z(self.qubits[2]),cirq.Z(self.qubits[3])
+                                  ]
+        # Creat critic VQC model
+        critic_output = tfq.layers.PQC(self.make_circuit(self.qubits), readout_operators_value, differentiator=diff1,
+                                initializer=tf.keras.initializers.Zeros)(inputs)
+
+        # Connect to classical dense
+        critic_output_bias = tf.keras.layers.Dense(1, activation='linear')(critic_output)
+
+        # Creat a critic VQC
+        Critic_model = tf.keras.Model(inputs=[inputs], outputs=[critic_output_bias])
+
+        # Draw actor and critic model
+        Actor_model.summary()
+        Critic_model.summary()
+        return Actor_model,Critic_model
+        
+    # convert_classical_to_quantum circuit 
+    def convert_data(self, x, flag=True):
+        # encoding layer
+        ops = cirq.Circuit()
+        beta0 = math.atan(x[0])
+        beta1 = math.atan(x[1])
+        beta2 = math.atan(x[2])
+        beta3 = math.atan(x[3])
+
+        ops.append([cirq.Moment([cirq.H(self.qubits[j]) for j in range(4)])])
+        ops.append(cirq.ry(beta0).on(self.qubits[0]))
+        ops.append(cirq.rz(beta0).on(self.qubits[0]))
+        ops.append(cirq.ry(beta1).on(self.qubits[1]))
+        ops.append(cirq.rz(beta1).on(self.qubits[1]))
+        ops.append(cirq.ry(beta2).on(self.qubits[2]))
+        ops.append(cirq.rz(beta2).on(self.qubits[2]))
+        ops.append(cirq.ry(beta3).on(self.qubits[3]))
+        ops.append(cirq.rz(beta3).on(self.qubits[3]))
+        # print("ops is{}".format(ops))
+        if flag:
+            return tfq.convert_to_tensor([ops])
+        else:
+            return ops
+            
+    # Parameters layers
+    def layer(self, weights, qubits):
+        #  parameters rotational  layer
+        l = cirq.Circuit()
+        #l.append([cirq.Moment([cirq.rx(weights[j]).on(qubits[j]) for j in range(4)])])
+        l.append([cirq.Moment([cirq.ry(weights[j]).on(qubits[j]) for j in range(4)])])
+        #l.append([cirq.Moment([cirq.rz(weights[j]).on(qubits[j]) for j in range(4)])])
+        return l
+    
+    # Make quantum cricuit
+    def make_circuit(self, qubits):
+        m = cirq.Circuit()
+        symbols = sympy.symbols('q0:20') # set number of parameters of parameters rotational  layer
+        m += self.layer(symbols[0:], qubits)
+
+        print(m)
+        return m
+
+    def remember(self, state, reward, action, probs):
+        # Set memory buffer
+        # count the number for a train periode
+        i = self.iter
+        self.states[i] = state
+        self.rewards[i] = reward
+        self.actions[i] = action
+        self.probs[i] = probs
+        self.iter += 1
+
+    def get_action(self, obs):
+
+        # Output of actor VQC: get a policy distribution from VQC
+        probs = self.actor.predict(self.convert_data(obs))[0]
+        action = np.random.choice(self.action_space, p=probs)
+
+        return action, probs
+
+    def discount_reward(self, rewards):
+        #set a array
+        d_rewards = np.zeros_like(rewards)
+        Gt = 0
+        # Discount rewards
+        for i in reversed(range(len(rewards))):
+            if i == len(rewards) - 1:
+                Gt = 0
+            else:
+                Gt = rewards[i] + self.gamma * Gt
+            d_rewards[i] = Gt
+        return d_rewards
+
+    def entropy(self, probs):
+        return tf.reduce_mean(-probs * tf.math.log(probs))
+
+    def ppo_loss(self, cur_pol, old_pol, advantages):
+        ratio = cur_pol/old_pol # calculate the ratio of old and new policy
+        ratio = tf.clip_by_value(ratio, 1e-10, 10 - 1e-10)
+        clipped = tf.clip_by_value(ratio, 1 - self.e, 1 + self.e) # calculate the clipped of ratio and policy region
+        loss = -tf.reduce_mean(tf.math.minimum(ratio * advantages, clipped * advantages)) \
+               #+ self.ent * self.entropy(cur_pol) # use entropy of PPO or not
+        return loss
+
+    def train(self):
+        batch_indices =[i for i in range(self.iter)]
+        # set state_batch of TFQ_tensor type
+        state_batch = tfq.convert_to_tensor([self.convert_data(i, False) for i in self.states[batch_indices]])
+
+        # set probability_batch and aciton_batch
+        p_batch = tf.convert_to_tensor(self.probs[:self.iter])
+        action_batch = tf.convert_to_tensor(self.actions[:self.iter])
+        action_batch = [[i, action_batch[i][0]] for i in range(len(action_batch))]
+        p_batch = tf.cast(p_batch, dtype=tf.float32)
+        #print("log_batch is {}".format(log_batch))
+        action_batch = tf.cast(action_batch, dtype=tf.int32)
+        #print("action_batch is {}".format(action_batch))
+
+        # calculate the reward for one train peried
+        rewards = self.discount_reward(self.rewards[:self.iter])
+
+        # times of training on a perioed
+        for _ in range(self.K):
+            with tf.GradientTape() as value_tape:
+                # forward the critic VQC and output a value
+                value_prediction = self.critic(state_batch, training=True)
+
+                # calculate the critic loss
+                critic_loss = tf.math.reduce_mean(tf.math.square(value_prediction - rewards))
+            critic_grads = value_tape.gradient(critic_loss, self.critic.trainable_variables)
+            self.critic_opt.apply_gradients(zip(critic_grads, self.critic.trainable_variables))
+
+            with tf.GradientTape() as policy_tape:
+
+                advantages = rewards - value_prediction  # calculate the advatanges function
+                advantages = (advantages - np.mean(advantages)) / (np.std(advantages) + 1e-8) # advantages normalized
+
+                # forward the actor VQC and output two value(according to the action space)
+                policy_pred = self.actor(state_batch, training=True)
+
+                # calculate PPO policy loss
+                policy_loss = self.ppo_loss(tf.gather_nd(policy_pred, action_batch),
+                                            tf.gather_nd(p_batch, action_batch), tf.squeeze(advantages))
+
+            policy_grads = policy_tape.gradient(policy_loss, self.actor.trainable_variables)
+            self.policy_opt.apply_gradients(zip(policy_grads, self.actor.trainable_variables))
+
+        # end of training clear the memory buffer
+        self.iter = 0
+
+if __name__ == '__main__':
+
+    ITERATIONS = 1000
+    windows = 20
+    env = random.seed(34)
+    # env = gym.make("LunarLander-v2")
+    # env = gym.make("Acrobot-v1")
+    env = gym.make("CartPole-v1")
+
+    agent = PPO_agent(env.action_space.n, env.observation_space.shape)
+    plot_rewards = []
+    avg_reward = deque(maxlen=ITERATIONS)
+    best_avg_reward = -math.inf
+    rs = deque(maxlen=windows)
+
+    for i in range(ITERATIONS):
+        state = env.reset()
+        episode_reward = 0
+        done = False
+        while not done:
+            # env.render()
+            action, p = agent.get_action(state)
+            next_state, reward, done, info = env.step(action)
+            episode_reward += reward
+            agent.remember(state, reward, action, p)
+            state = next_state
+
+        agent.train()
+        plot_rewards.append(episode_reward)
+        rs.append(episode_reward)
+        avg = np.mean(rs)
+        avg_reward.append(avg)
+
+        if i >= windows:
+            if avg > best_avg_reward:
+                best_avg_reward = avg
+
+        print("\rEpisode {}/{} || Best average reward {}, Current Average {}, Current Iteration Reward {}".format(i,
+                                                                                                                  ITERATIONS,
+                                                                                                                  best_avg_reward,
+                                                                                                                  avg,
+                                                                                                                  episode_reward),
+              )
+
+    np.save("VQC PPO Cartpole-v1 V0.0.0 single_qubit * 4 HRyRz Ry 4*16 reuse lr=0.001 rewards", np.asarray(plot_rewards))
+    agent.actor.save_weights('VQC PPO Cartpole-v1 single_qubit * 4 HRyRz Ry 4*16 reuse lr=0.001actor policy and weight.h5',overwrite=True)
+    agent.critic.save_weights('VQC PPO Cartpole-v1 single_qubit * 4 HRyRz Ry 4*16 reuse lr=0.001 critic policy and weight.h5',overwrite=True)
+
+    plt.title("VQC PPO Cartpole-v1 single_qubit * 4 HRyRz Ry 4*16 reuse lr=0.001 ")
+    plt.plot(plot_rewards, label='Reward')
+    plt.plot(avg_reward, label='Average')
+    plt.legend()
+    plt.ylabel('Reward')
+    plt.xlabel('Iteration')
+    plt.show()
