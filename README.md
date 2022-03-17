@@ -1,1 +1,1 @@
-# single-qubit-reinforcement-learning
+# Unentangled quantum reinforcement learning agent in OpenAI Gym
